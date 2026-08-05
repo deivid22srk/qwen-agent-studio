@@ -3,17 +3,12 @@
  *
  * Responsabilidades:
  *  1. Inicializar o injector (UI flutuante + painel).
- *  2. Injetar main_world.js na página (MAIN WORLD) para hookar o fetch.
+ *  2. Injetar main_world.js na página (MAIN WORLD) para hookar o fetch e
+ *     chamar showDirectoryPicker a partir do contexto da página.
  *  3. Responder a mensagens do main_world com estado do agente + system prompt.
- *  4. Observar novas mensagens do assistente, detectar tool calls, executar,
+ *  4. Receber o FileSystemDirectoryHandle do main_world e persistir no IndexedDB.
+ *  5. Observar novas mensagens do assistente, detectar tool calls, executar,
  *     e injetar o resultado como nova mensagem de usuário.
- *  5. Manter o usuário informado via badge + painel de log.
- *
- * Arquitetura de comunicação:
- *   - main_world.js (MAIN) → window.postMessage → content.js (ISOLATED)
- *   - content.js responde com window.postMessage de volta
- *   Isto é necessário porque content scripts em MV3 rodam em isolated world
- *   e não conseguem hookar window.fetch da página diretamente.
  */
 
 (function () {
@@ -22,7 +17,7 @@
   let SESSION_ID = 'sess-' + Date.now();
   let lastHandledSignature = new Set();
   let busy = false;
-  let cachedSystemPrompt = null; // cache: invalidado quando agent_on muda
+  let cachedSystemPrompt = null;
   let cachedAgentOn = null;
 
   async function getCtx() {
@@ -36,10 +31,9 @@
     };
   }
 
-  // ---------- 1) Injeta main_world.js no MAIN WORLD da página ----------
+  // ---------- 1) Injeta main_world.js no MAIN WORLD ----------
   function injectMainWorldScript() {
     if (document.getElementById('qwen-agent-main-world-script')) return;
-    // Tenta via <script src> (web_accessible_resources)
     try {
       const s = document.createElement('script');
       s.src = chrome.runtime.getURL('main_world.js');
@@ -57,14 +51,14 @@
   async function handleMainWorldMessage(event) {
     if (event.source !== window) return;
     if (!event.data || event.data.source !== 'qwen-agent-main') return;
-    const { id, type, payload } = event.data;
+    const { type, payload } = event.data;
 
+    // Estado do agente (consultado pelo hook do fetch antes de cada POST)
     if (type === 'get-agent-state') {
       try {
         const agentOn = await QwenStore.getConfig('agent_on', false);
         let systemPrompt = null;
         if (agentOn) {
-          // só rebuilda se mudou
           if (cachedAgentOn !== agentOn || !cachedSystemPrompt) {
             const ctx = await getCtx();
             cachedSystemPrompt = QwenParser.buildSystemPrompt(ctx);
@@ -75,7 +69,8 @@
         const folder = await QwenStore.getHandle();
         window.postMessage({
           source: 'qwen-agent-isolated',
-          id, type: 'agent-state-response',
+          id: event.data.id,
+          type: 'agent-state-response',
           payload: {
             agentOn,
             systemPrompt,
@@ -86,15 +81,68 @@
       } catch (e) {
         window.postMessage({
           source: 'qwen-agent-isolated',
-          id, type: 'agent-state-response',
+          id: event.data.id,
+          type: 'agent-state-response',
           payload: { agentOn: false, systemPrompt: null, error: e.message }
         }, '*');
       }
+      return;
+    }
+
+    // Pasta selecionada via main_world (showDirectoryPicker)
+    if (type === 'folder-picked' && payload && payload.handle) {
+      console.log('[QwenAgent] pasta recebida do main_world:', payload.name);
+      try {
+        // Re-verifica permissão no contexto do content script
+        const ok = await QwenFS.verifyPermission(payload.handle, 'readwrite');
+        if (!ok) {
+          QwenInjector.showBadge('❌ Permissão negada');
+          alert('Permissão negada para a pasta. Tente novamente.');
+          return;
+        }
+        await QwenStore.putHandle(payload.handle);
+        await QwenStore.setConfig('agent_on', true);
+        await QwenStore.setConfig('last_folder', payload.handle.name);
+        // invalida cache do system prompt
+        cachedAgentOn = null;
+        cachedSystemPrompt = null;
+        await QwenInjector.refreshState();
+        QwenInjector.showBadge(`✅ Pasta conectada: ${payload.handle.name}`);
+        // troca para a aba Arquivos do painel
+        QwenInjector.renderBody('files');
+      } catch (e) {
+        console.error('[QwenAgent] erro ao salvar handle:', e);
+        alert('Erro ao salvar pasta: ' + e.message);
+      }
+      return;
+    }
+
+    // Erro ao selecionar pasta
+    if (type === 'folder-pick-error' && payload && payload.error) {
+      console.error('[QwenAgent] folder-pick-error:', payload);
+      // só alerta se não for AbortError (usuário cancelou)
+      if (payload.errorName !== 'AbortError' && !/abort/i.test(payload.error)) {
+        alert('Erro ao selecionar pasta:\n\n' + payload.error);
+        QwenInjector.showBadge('❌ ' + payload.error.slice(0, 60));
+      }
+      return;
+    }
+
+    // Teste do agente (debug)
+    if (type === 'show-test-result' && payload && payload.state) {
+      const s = payload.state;
+      alert(
+        'Estado do Agente:\n' +
+        '  agentOn: ' + s.agentOn + '\n' +
+        '  hasFolder: ' + s.hasFolder + '\n' +
+        '  folderName: ' + (s.folderName || '(none)') + '\n' +
+        '  systemPrompt chars: ' + (s.systemPrompt ? s.systemPrompt.length : 0)
+      );
     }
   }
   window.addEventListener('message', handleMainWorldMessage);
 
-  // ---------- 3) Observa mensagens do assistente (fallback robusto) ----------
+  // ---------- 3) Observa mensagens do assistente para detectar tool calls ----------
   function observeMessages() {
     const observer = new MutationObserver(() => {
       if (busy) return;
@@ -104,8 +152,6 @@
   }
 
   async function handleLatestAssistantMessage() {
-    // Tenta vários seletores possíveis para a última mensagem do assistente.
-    // Ordem: do mais específico para o mais genérico.
     const selectors = [
       '[class*="message"][class*="recieved"]',
       '[class*="message"][class*="received"]',
@@ -118,7 +164,6 @@
     for (const sel of selectors) {
       const list = document.querySelectorAll(sel);
       if (list.length) {
-        // pega o último visível
         for (let i = list.length - 1; i >= 0; i--) {
           if (list[i].offsetParent !== null || list[i].offsetHeight > 0) {
             lastMsg = list[i];
@@ -133,21 +178,18 @@
     const text = (lastMsg.innerText || lastMsg.textContent || '').trim();
     if (!text) return;
 
-    // signature para não processar a mesma msg 2x
     const sig = text.slice(0, 80) + '|' + text.length;
     if (lastHandledSignature.has(sig)) return;
 
     const calls = QwenParser.extractToolCalls(text);
     if (!calls.length) return;
 
-    // só processa se a mensagem parece "estável" (não está mais crescendo).
     const sizeBefore = text.length;
     busy = true;
     QwenInjector.setBusy(true);
     await sleep(900);
     const textAfter = (lastMsg.innerText || '').trim();
     if (Math.abs(textAfter.length - sizeBefore) > 50) {
-      // ainda mudando — tenta de novo depois
       busy = false;
       QwenInjector.setBusy(false);
       return;
@@ -155,7 +197,6 @@
 
     lastHandledSignature.add(sig);
 
-    // Por segurança, processa apenas a primeira chamada neste turno
     const call = calls[0];
     QwenInjector.showBadge(`⚙️ ${call.name}…`, 1500);
 
@@ -178,7 +219,6 @@
       result = '❌ Erro: ' + e.message;
     }
 
-    // injeta o resultado como nova mensagem de usuário
     const formatted = QwenParser.formatToolResult(call, result);
     await injectUserMessage(formatted);
 
@@ -200,23 +240,19 @@
       return;
     }
 
-    // Foca e define o valor usando o setter nativo (React controla o valor)
     const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLTextAreaElement.prototype, 'value'
     ).set;
     nativeInputValueSetter.call(textarea, text);
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-    // Aguarda o React processar e dispara Enter
     await sleep(150);
 
-    // Tenta o botão de envio
     const sendBtn = document.querySelector('.message-input-right-button-send') ||
                     document.querySelector('[class*="send"]:not([disabled])');
     if (sendBtn) {
       sendBtn.click();
     } else {
-      // fallback: Enter
       const ev = new KeyboardEvent('keydown', {
         bubbles: true, cancelable: true,
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13
@@ -228,7 +264,6 @@
   // ---------- 5) Listener para mensagens do popup/background ----------
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'REFRESH_STATE') {
-      // invalida cache do system prompt
       cachedAgentOn = null;
       cachedSystemPrompt = null;
       QwenInjector.refreshState().then(() => sendResponse({ ok: true }));
@@ -239,34 +274,25 @@
       return true;
     }
     if (msg.type === 'OPEN_FOLDER_PICKER') {
-      // O popup chama isto — ainda há ativação transitória do gesto do clique.
-      // Garante que o painel está aberto e dispara o seletor.
+      // O popup pediu para abrir o seletor de pasta. Como o gesto do usuário
+      // foi consumido no popup, não podemos chamar showDirectoryPicker aqui.
+      // Apenas abrimos o painel e instruímos o usuário a clicar no botão.
       const p = document.querySelector('.qa-panel');
-      if (p) p.classList.add('open');
-      // chama a função interna do injector
-      if (globalThis.QwenInjector && QwenInjector._pickFolder) {
-        QwenInjector._pickFolder().then(() => sendResponse({ ok: true }))
-          .catch((e) => sendResponse({ ok: false, error: e.message }));
-      } else {
-        // fallback: pickFolder inline
-        const pick = async () => {
-          try {
-            const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-            const ok = await QwenFS.verifyPermission(handle, 'readwrite');
-            if (!ok) return { ok: false, error: 'permission denied' };
-            await QwenStore.putHandle(handle);
-            await QwenStore.setConfig('agent_on', true);
-            await QwenStore.setConfig('last_folder', handle.name);
-            await QwenInjector.refreshState();
-            QwenInjector.showBadge(`✅ Pasta conectada: ${handle.name}`);
-            return { ok: true };
-          } catch (e) {
-            return { ok: false, error: e.message };
-          }
-        };
-        pick().then(sendResponse);
+      if (p) {
+        p.classList.add('open');
+        // Destaca o botão por 2s
+        const btn = p.querySelector('#qa-pick');
+        if (btn) {
+          btn.style.outline = '3px solid #6d5bff';
+          btn.style.outlineOffset = '2px';
+          setTimeout(() => {
+            btn.style.outline = '';
+            btn.style.outlineOffset = '';
+          }, 3000);
+        }
       }
-      return true;
+      sendResponse({ ok: true, instruction: 'Clique no botão "Selecionar pasta" no painel à direita.' });
+      return false;
     }
     if (msg.type === 'GET_STATE') {
       sendResponse({
@@ -284,7 +310,6 @@
     await QwenInjector.init();
     injectMainWorldScript();
     observeMessages();
-    // garante estado fresco a cada navigation SPA
     let lastUrl = location.href;
     setInterval(() => {
       if (location.href !== lastUrl) {
@@ -296,7 +321,6 @@
     }, 1500);
   }
 
-  // start
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
   } else {

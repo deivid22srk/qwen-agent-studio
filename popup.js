@@ -48,19 +48,24 @@ document.getElementById('qa-toggle-agent').addEventListener('change', async (e) 
 });
 
 document.getElementById('qa-pick').addEventListener('click', async () => {
+  // IMPORTANTE: não podemos chamar showDirectoryPicker a partir do popup
+  // porque o gesto do usuário é perdido quando enviamos mensagem para o
+  // content script. Em vez disso, abrimos o Qwen, abrimos o painel e
+  // instruímos o usuário a clicar no botão "Selecionar pasta" no painel.
   let tab = await getActiveQwenTab();
   if (!tab) {
-    // abre o Qwen e tenta de novo após carregar
     tab = await new Promise((resolve) => chrome.tabs.create({ url: 'https://chat.qwen.ai/' }, resolve));
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => setTimeout(r, 5000));
   }
   if (!tab) {
     alert('Não foi possível abrir o Qwen.');
     return;
   }
-  // sinaliza o content script para abrir o seletor
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'OPEN_FOLDER_PICKER' });
+    // Foca a aba do Qwen para o usuário ver o painel
+    chrome.tabs.update(tab.id, { active: true });
+    chrome.windows.update(tab.windowId, { focused: true });
     window.close();
   } catch (e) {
     alert('Recarregue a aba do Qwen (F5) e tente novamente. Detalhe: ' + e.message);
