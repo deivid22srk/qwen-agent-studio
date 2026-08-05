@@ -1,0 +1,85 @@
+/* popup.css — estilos do popup da extensão */
+
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  background: #1a1a1a;
+  color: #eaeaea;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.qa-pop-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px;
+  background: linear-gradient(135deg, #4628e0 0%, #6d5bff 100%);
+  color: #fff;
+}
+.qa-pop-logo {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: rgba(255,255,255,.15);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+.qa-pop-header h1 {
+  margin: 0; font-size: 15px; font-weight: 700;
+}
+.qa-pop-sub {
+  margin: 2px 0 0; font-size: 11px; opacity: .85;
+}
+
+.qa-pop-card {
+  margin: 12px; padding: 12px;
+  background: #222; border-radius: 10px;
+}
+.qa-pop-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0;
+}
+.qa-pop-row + .qa-pop-row { border-top: 1px solid #2e2e2e; }
+.qa-pop-folder {
+  color: #8b8b8b; font-size: 12px;
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.qa-pop-switch {
+  position: relative; display: inline-block; width: 42px; height: 24px;
+}
+.qa-pop-switch input { opacity: 0; width: 0; height: 0; }
+.qa-pop-slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: #3a3a3a; border-radius: 12px; transition: .2s;
+}
+.qa-pop-slider::before {
+  content: ""; position: absolute; height: 18px; width: 18px;
+  left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s;
+}
+.qa-pop-switch input:checked + .qa-pop-slider { background: #4628e0; }
+.qa-pop-switch input:checked + .qa-pop-slider::before { transform: translateX(18px); }
+
+.qa-pop-actions {
+  padding: 0 12px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.qa-pop-btn {
+  background: #2a2a2a; color: #fff; border: 1px solid #3a3a3a;
+  padding: 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13px; transition: background .15s;
+}
+.qa-pop-btn:hover { background: #333; }
+.qa-pop-btn.primary { background: #4628e0; border-color: #4628e0; }
+.qa-pop-btn.primary:hover { background: #5836ff; }
+.qa-pop-btn.danger { background: #5a1d1d; border-color: #7a2424; }
+.qa-pop-btn.danger:hover { background: #6f2424; }
+.qa-pop-btn.ghost { background: transparent; color: #8b8b8b; }
+
+.qa-pop-footer {
+  padding: 10px 16px;
+  border-top: 1px solid #2a2a2a;
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: #666;
+}
+.qa-pop-footer a { color: #8ab4ff; text-decoration: none; }
+.qa-pop-footer a:hover { text-decoration: underline; }

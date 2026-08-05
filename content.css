@@ -1,0 +1,15 @@
+/* content.css — estilos básicos que não dependem de JS para serem aplicados.
+   O restante é injetado em runtime pelo injector.js para garantir precedência. */
+
+.qa-toggle-btn,
+.qa-panel,
+.qa-badge {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  box-sizing: border-box;
+}
+
+.qa-toggle-btn *,
+.qa-panel *,
+.qa-badge * {
+  box-sizing: border-box;
+}

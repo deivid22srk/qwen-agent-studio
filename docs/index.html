@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Qwen Agent Studio — Tool calls no Qwen AI</title>
+  <meta name="description" content="Extensão Chrome que transforma o Qwen AI (chat.qwen.ai) em um agente real com tool calls e pasta de projetos, estilo OpenCode / Claude Code." />
+  <link rel="icon" type="image/svg+xml" href="assets/icon.svg" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <!-- HERO -->
+  <header class="hero">
+    <div class="container hero-inner">
+      <div class="hero-logo">
+        <img src="assets/icon.svg" alt="Qwen Agent Studio" width="84" height="84" />
+      </div>
+      <h1>Qwen Agent Studio</h1>
+      <p class="tagline">
+        Transforme a interface do <strong>Qwen AI</strong> em um verdadeiro agente
+        com <strong>Tool Calls</strong>, acesso a arquivos locais e pasta de projetos —
+        estilo <em>OpenCode</em> / <em>Claude Code</em>.
+      </p>
+      <div class="cta-row">
+        <a id="install-btn" class="btn btn-primary" href="qwen-agent-studio.zip" download>
+          ⬇️ Baixar extensão (.zip)
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/deivid22srk/qwen-agent-studio" target="_blank" rel="noreferrer">
+          ⭐ Ver no GitHub
+        </a>
+      </div>
+      <p class="install-hint" id="install-hint">
+        Após baixar: extraia → abra <code>chrome://extensions</code> → ative
+        <strong>Modo desenvolvedor</strong> → <strong>Carregar sem compactação</strong> → selecione a pasta.
+      </p>
+    </div>
+  </header>
+
+  <!-- FEATURES -->
+  <section class="features container">
+    <h2 class="section-title">O que ela faz</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="card-icon">🛠️</div>
+        <h3>Tool Calls nativos</h3>
+        <p>
+          O Qwen passa a invocar ferramentas reais: ler, escrever, editar, listar e
+          buscar arquivos. Cada chamada é detectada automaticamente nas respostas do
+          modelo, executada e o resultado é devolvido para a conversa continuar.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-icon">📁</div>
+        <h3>Pasta de projetos</h3>
+        <p>
+          Selecione uma pasta do seu computador via <strong>File System Access API</strong>.
+          O agente opera sobre seus arquivos locais — criar <code>hello.py</code>,
+          editar <code>src/index.js</code>, navegar pela árvore do projeto.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🎨</div>
+        <h3>Injeção na UI nativa</h3>
+        <p>
+          Nenhuma interface paralela. Um botão flutuante 🤖 e um painel lateral
+          discretos são injetados diretamente no <code>chat.qwen.ai</code> —
+          preservando todo o resto da experiência.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔍</div>
+        <h3>Grep + glob</h3>
+        <p>
+          <code>search_files</code> por nome e <code>grep</code> por conteúdo
+          recursivamente. Pede "encontre onde fica a função main" e o agente resolve
+          sozinho, sem copiar e colar código manualmente.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-icon">📜</div>
+        <h3>Histórico de tools</h3>
+        <p>
+          Cada chamada é registrada (com argumentos, resultado, duração). Veja
+          exatamente o que o agente fez, na aba <em>Tool Log</em> do painel lateral.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔒</div>
+        <h3>100% local</h3>
+        <p>
+          Tudo roda dentro do seu navegador. Nenhum dado sai do seu computador,
+          nenhuma telemetria. Os handles de arquivo ficam no IndexedDB do seu perfil.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- USAGE -->
+  <section class="usage container" id="usage">
+    <h2 class="section-title">Como usar</h2>
+    <ol class="steps">
+      <li>
+        <strong>Baixe e extraia</strong> a extensão (botão acima).
+      </li>
+      <li>
+        Abra <code>chrome://extensions</code> no Chrome (ou Edge, Brave, Arc,
+        Opera — qualquer navegador Chromium). Ative o <strong>Modo desenvolvedor</strong>
+        no canto superior direito.
+      </li>
+      <li>
+        Clique em <strong>Carregar sem compactação</strong> e selecione a pasta
+        extraída (<code>qwen-agent-extension</code>).
+      </li>
+      <li>
+        Abra <a href="https://chat.qwen.ai" target="_blank" rel="noreferrer">chat.qwen.ai</a>.
+        Você verá um botão flutuante 🤖 no canto inferior direito.
+      </li>
+      <li>
+        Clique nele → <strong>Selecionar pasta</strong> → escolha a pasta do seu projeto.
+      </li>
+      <li>
+        Ligue o <strong>Modo Agente</strong> no painel.
+      </li>
+      <li>
+        No chat do Qwen, peça tarefas como:
+        <ul>
+          <li><em>"liste os arquivos do projeto"</em></li>
+          <li><em>"leia o src/index.js e explique"</em></li>
+          <li><em>"crie um arquivo test.py que imprime Olá Mundo"</em></li>
+          <li><em>"encontre onde fica a função main"</em></li>
+          <li><em>"renomeie todas as ocorrências de foo para bar em src/"</em></li>
+        </ul>
+      </li>
+    </ol>
+
+    <div class="callout">
+      <strong>💡 Dica:</strong> a primeira requisição após ligar o agente pode demorar
+      alguns segundos a mais — o system prompt com a lista de ferramentas é injetado
+      automaticamente. Você verá um badge "⚙️ read_file…" sempre que uma ferramenta
+      estiver em execução.
+    </div>
+  </section>
+
+  <!-- TOOLS -->
+  <section class="tools container">
+    <h2 class="section-title">Ferramentas disponíveis</h2>
+    <table class="tools-table">
+      <thead><tr><th>Nome</th><th>O que faz</th></tr></thead>
+      <tbody>
+        <tr><td><code>list_files</code></td><td>Lista o conteúdo de um diretório</td></tr>
+        <tr><td><code>tree</code></td><td>Mostra a árvore de diretórios</td></tr>
+        <tr><td><code>read_file</code></td><td>Lê o conteúdo de um arquivo</td></tr>
+        <tr><td><code>write_file</code></td><td>Cria ou sobrescreve um arquivo</td></tr>
+        <tr><td><code>edit_file</code></td><td>Edita trecho exato de um arquivo</td></tr>
+        <tr><td><code>append_file</code></td><td>Anexa conteúdo ao final</td></tr>
+        <tr><td><code>delete_file</code></td><td>Apaga um arquivo</td></tr>
+        <tr><td><code>create_directory</code></td><td>Cria diretório (recursivo)</td></tr>
+        <tr><td><code>search_files</code></td><td>Busca por nome (glob)</td></tr>
+        <tr><td><code>grep</code></td><td>Busca conteúdo em arquivos</td></tr>
+        <tr><td><code>run_command</code></td><td>Executa shell (requer helper opcional)</td></tr>
+        <tr><td><code>finish</code></td><td>Sinaliza fim da tarefa</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="container">
+      <p>
+        Feito por <a href="https://github.com/deivid22srk" target="_blank" rel="noreferrer">@deivid22srk</a> ·
+        <a href="https://github.com/deivid22srk/qwen-agent-studio" target="_blank" rel="noreferrer">Código fonte</a> ·
+        <a href="https://github.com/deivid22srk/qwen-agent-studio/issues" target="_blank" rel="noreferrer">Issues</a>
+      </p>
+      <p class="disclaimer">
+        Não afiliado à Alibaba / Qwen. Projeto open-source independente.
+      </p>
+    </div>
+  </footer>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

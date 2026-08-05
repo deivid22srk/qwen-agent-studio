@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Qwen Agent Studio</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="qa-pop-header">
+    <div class="qa-pop-logo">🤖</div>
+    <div>
+      <h1>Qwen Agent Studio</h1>
+      <p class="qa-pop-sub">Tool calls + pasta de projetos no Qwen</p>
+    </div>
+  </header>
+
+  <section class="qa-pop-card" id="qa-status-card">
+    <div class="qa-pop-row">
+      <span>Modo Agente</span>
+      <label class="qa-pop-switch">
+        <input type="checkbox" id="qa-toggle-agent" />
+        <span class="qa-pop-slider"></span>
+      </label>
+    </div>
+    <div class="qa-pop-row">
+      <span>Pasta de projetos</span>
+      <span id="qa-folder-name" class="qa-pop-folder">— nenhuma —</span>
+    </div>
+  </section>
+
+  <section class="qa-pop-actions">
+    <button id="qa-pick" class="qa-pop-btn primary">📁 Selecionar pasta</button>
+    <button id="qa-clear" class="qa-pop-btn danger" style="display:none">🔌 Desconectar</button>
+    <button id="qa-open-qwen" class="qa-pop-btn">💬 Abrir Qwen Studio</button>
+    <button id="qa-help" class="qa-pop-btn ghost">📖 Como usar</button>
+  </section>
+
+  <footer class="qa-pop-footer">
+    <span>v1.0.0</span>
+    <a href="https://github.com/deivid22srk/qwen-agent-studio" target="_blank" rel="noreferrer">GitHub</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

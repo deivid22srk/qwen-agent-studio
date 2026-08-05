@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Qwen Agent Studio — Tool Call & Project Folder",
+  "short_name": "Qwen Agent",
+  "version": "1.0.0",
+  "description": "Transforma a interface do Qwen (chat.qwen.ai) em um agente real com suporte a Tool Call, pasta de projetos e execução de comandos — estilo OpenCode / Claude Code.",
+  "author": "deivid22srk",
+  "homepage_url": "https://deivid22srk.github.io/qwen-agent-studio/",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "downloads",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://chat.qwen.ai/*",
+    "https://*.qwen.ai/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Qwen Agent Studio",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.qwen.ai/*", "https://*.qwen.ai/*"],
+      "js": ["lib/store.js", "lib/fs.js", "lib/tools.js", "lib/parser.js", "lib/injector.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png", "icons/*.svg", "lib/*.js"],
+      "matches": ["https://*.qwen.ai/*"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
