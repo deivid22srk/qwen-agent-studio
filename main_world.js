@@ -31,7 +31,7 @@
     }
   });
 
-  function askIsolated(type, payload, timeoutMs = 2000) {
+  function askIsolated(type, payload, timeoutMs = 800) {
     return new Promise((resolve) => {
       const id = 'r' + Math.random().toString(36).slice(2, 10);
       PENDING.set(id, { resolve });
@@ -58,19 +58,20 @@
   // =====================================================================
   // PARTE 1: Hook do window.fetch
   // =====================================================================
-  // IMPORTANTE: o Qwen SPA também hooka window.fetch. Para garantir que
-  // nosso hook rode DEPOIS do hook do Qwen (e veja o body final), usamos
-  // Object.defineProperty com getter/setter. Assim, mesmo que o Qwen SPA
-  // tente sobrescrever window.fetch depois, nosso hook permanece no controle.
+  // Estratégia:
+  //  - Só intercepta POSTs para endpoints de CHAT (não todo /api/*)
+  //  - Lê o body, parseia JSON, mescla system prompt com system message
+  //    existente (em vez de adicionar novo)
+  //  - Se a resposta for erro (4xx/5xx), RETRY com body original (sem
+  //    modificação) para não quebrar a conversa do usuário
+  //  - Re-instala periodicamente para sobreviver a wrappers do Qwen SPA
 
   function makeHookedFetch(downstreamFetch) {
-    // downstreamFetch = o fetch que está "abaixo" do nosso hook (pode ser o
-    // nativo ou o wrapper do Qwen SPA). Chamamos downstreamFetch.apply(...)
-    // para que o wrapper do SPA ainda execute (preservando o comportamento dele).
     return async function (...args) {
       let url = '';
       let init = null;
       let requestObj = null;
+      let originalArgs = args; // para fallback
 
       // Caso A: fetch(url, init)
       if (typeof args[0] === 'string') {
@@ -102,116 +103,195 @@
       }
 
       const method = (init.method || 'GET').toUpperCase();
-      const isApiPost = method === 'POST' && /\/api\//i.test(url);
 
-      if (isApiPost) {
-        console.log(TAG, 'POST →', url, '| body type:', typeof init.body,
-                    '| hasRequest:', !!requestObj);
+      // Só intercepta POSTs para endpoints de chat/completion específicos do Qwen.
+      // O Qwen usa /api/v2/chat/completions (versão 2 da API).
+      // NÃO usar /api/ genérico — quebra auth, chats list, users/status, etc.
+      const isChatEndpoint = method === 'POST' && (
+        /\/api\/v\d+\/chat\/completions?/i.test(url) ||
+        /\/api\/chat\/completions?/i.test(url) ||
+        /\/api\/v\d+\/completions?/i.test(url) ||
+        /\/api\/completions?/i.test(url) ||
+        /\/api\/v\d+\/chat(s)?\/new/i.test(url) ||
+        /\/api\/chat(s)?\/new/i.test(url) ||
+        /\/api\/v\d+\/chat\/message/i.test(url) ||
+        /\/api\/chat\/message/i.test(url)
+      );
+
+      if (!isChatEndpoint) {
+        // Não é endpoint de chat — repassa sem modificar
+        return downstreamFetch.apply(this, args);
       }
 
-      // Tenta injetar system prompt se for endpoint de chat
-      if (isApiPost) {
-        try {
-          const state = await askIsolated('get-agent-state');
-          if (state && state.agentOn && state.systemPrompt) {
-            let bodyText = null;
-            if (typeof init.body === 'string') {
-              bodyText = init.body;
-            } else if (init.body instanceof Blob) {
-              bodyText = await init.body.text();
-            } else if (init.body instanceof ArrayBuffer) {
-              bodyText = new TextDecoder().decode(init.body);
-            } else if (requestObj) {
-              try { bodyText = await requestObj.clone().text(); } catch (_) { bodyText = null; }
-            } else if (init.body && typeof init.body === 'object') {
-              try { bodyText = String(init.body); } catch (_) { bodyText = null; }
-            }
+      console.log(TAG, 'POST chat →', url, '| body type:', typeof init.body);
 
-            if (bodyText) {
-              let body;
-              try { body = JSON.parse(bodyText); } catch (_) { body = null; }
+      // Tenta injetar system prompt
+      let modified = false;
+      let modifiedArgs = null;
 
-              if (body && Array.isArray(body.messages)) {
-                const hasAgentSys = body.messages.some((m) =>
-                  m.role === 'system' && typeof m.content === 'string' &&
-                  m.content.includes('TOOL CALL')
-                );
-                if (!hasAgentSys) {
-                  body.messages.unshift({ role: 'system', content: state.systemPrompt });
-                  const newBodyStr = JSON.stringify(body);
-                  init = { ...init, body: newBodyStr };
-                  requestObj = null;
-                  console.log(TAG, '✅ system prompt injetado em', url,
-                              '| mensagens:', body.messages.length,
+      try {
+        const state = await askIsolated('get-agent-state');
+        if (state && state.agentOn && state.systemPrompt) {
+          // Lê o body em texto
+          let bodyText = null;
+          if (typeof init.body === 'string') {
+            bodyText = init.body;
+          } else if (init.body instanceof Blob) {
+            bodyText = await init.body.text();
+          } else if (init.body instanceof ArrayBuffer) {
+            bodyText = new TextDecoder().decode(init.body);
+          } else if (requestObj) {
+            try { bodyText = await requestObj.clone().text(); } catch (_) { bodyText = null; }
+          } else if (init.body && typeof init.body === 'object') {
+            try { bodyText = String(init.body); } catch (_) { bodyText = null; }
+          }
+
+          if (bodyText) {
+            let body;
+            try { body = JSON.parse(bodyText); } catch (_) { body = null; }
+
+            if (body && Array.isArray(body.messages)) {
+              // Verifica se já temos nosso system prompt
+              const hasAgentSys = body.messages.some((m) =>
+                m.role === 'system' && typeof m.content === 'string' &&
+                m.content.includes('TOOL CALL')
+              );
+
+              if (!hasAgentSys) {
+                // Mescla com system message existente (em vez de adicionar novo)
+                const existingSysIdx = body.messages.findIndex((m) => m.role === 'system');
+                if (existingSysIdx >= 0) {
+                  // Mescla: prepend nosso prompt ao system existente
+                  const existing = body.messages[existingSysIdx];
+                  existing.content = state.systemPrompt + '\n\n' + (existing.content || '');
+                  console.log(TAG, '✅ system prompt mesclado em message[' + existingSysIdx + ']',
                               '| prompt chars:', state.systemPrompt.length);
                 } else {
-                  console.log(TAG, 'system prompt já presente, pulando');
+                  // Não há system message — adiciona no início
+                  body.messages.unshift({ role: 'system', content: state.systemPrompt });
+                  console.log(TAG, '✅ system prompt adicionado no início',
+                              '| prompt chars:', state.systemPrompt.length);
                 }
-              } else if (body) {
-                console.log(TAG, '⚠️ body sem array messages. keys:', Object.keys(body).slice(0, 10));
+
+                const newBodyStr = JSON.stringify(body);
+                // Constrói novos args: sempre (url, init) form (não Request)
+                const newInit = { ...init, body: newBodyStr };
+                // Copia headers se era Request
+                if (requestObj && requestObj.headers) {
+                  try {
+                    const headersObj = {};
+                    requestObj.headers.forEach((value, key) => {
+                      headersObj[key] = value;
+                    });
+                    newInit.headers = headersObj;
+                  } catch (_) { /* mantém init.headers */ }
+                }
+                modifiedArgs = [url, newInit];
+                modified = true;
+                console.log(TAG, '✅ system prompt injetado em', url,
+                            '| mensagens:', body.messages.length,
+                            '| prompt chars:', state.systemPrompt.length);
+              } else {
+                console.log(TAG, 'system prompt já presente, pulando');
               }
-            } else {
-              console.log(TAG, '⚠️ não foi possível ler body. type:', typeof init.body);
+            } else if (body) {
+              console.log(TAG, '⚠️ body sem array messages. keys:', Object.keys(body).slice(0, 10));
+              // NÃO modifica — repassa original
             }
-          } else if (state && !state.agentOn) {
-            // agente desligado, não injeta
-          } else if (!state) {
-            console.warn(TAG, 'content script não respondeu a get-agent-state');
+          } else {
+            console.log(TAG, '⚠️ não foi possível ler body. type:', typeof init.body);
+            // NÃO modifica — repassa original
           }
-        } catch (e) {
-          console.warn(TAG, 'falha ao injetar system prompt:', e);
+        } else if (state && !state.agentOn) {
+          // agente desligado, não modifica
+        } else if (!state) {
+          console.warn(TAG, 'content script não respondeu a get-agent-state — repassando sem modificar');
         }
+      } catch (e) {
+        console.warn(TAG, 'falha ao injetar system prompt:', e, '— repassando sem modificar');
       }
 
-      // Chama o fetch "abaixo" (nativo ou wrapper do Qwen SPA)
-      if (requestObj) {
-        return downstreamFetch.apply(this, [requestObj]);
+      // Se não modificou, repassa args originais
+      if (!modified) {
+        return downstreamFetch.apply(this, originalArgs);
       }
-      if (typeof args[0] === 'string' || (args[0] && !(args[0] instanceof Request))) {
-        return downstreamFetch.apply(this, [args[0], init]);
+
+      // Faz a chamada com o body modificado
+      try {
+        const response = await downstreamFetch.apply(this, modifiedArgs);
+
+        // Se a resposta for erro (4xx/5xx), RETRY com body original
+        if (response && response.status >= 400) {
+          console.warn(TAG, '⚠️ API retornou erro', response.status,
+                       '— retrying com body original (sem system prompt)');
+          // Tenta ler o corpo do erro para debug
+          try {
+            const errClone = response.clone();
+            const errText = await errClone.text();
+            console.warn(TAG, 'erro body (primeiros 500 chars):', errText.slice(0, 500));
+          } catch (_) {}
+
+          // Retry com args originais
+          const retryResponse = await downstreamFetch.apply(this, originalArgs);
+          console.log(TAG, 'retry status:', retryResponse.status);
+          return retryResponse;
+        }
+
+        console.log(TAG, '✅ resposta OK', response.status);
+        return response;
+      } catch (e) {
+        console.error(TAG, 'fetch modificado falhou:', e.message,
+                      '— retrying com body original');
+        // Retry com args originais
+        return downstreamFetch.apply(this, originalArgs);
       }
-      return downstreamFetch.apply(this, [args[0], init]);
     };
   }
 
-  // Substitui window.fetch com nosso hook. Como o Qwen SPA também hooka fetch
-  // (às vezes DEPOIS de nós, sobrescrevendo nosso hook), re-aplicamos
-  // periodicamente para garantir que sejamos sempre o hook mais externo.
-  // Não usamos writable:false porque isso pode quebrar o SPA.
+  // Instala o hook UMA VEZ, tornando window.fetch non-writable para que o
+  // Qwen SPA não consiga sobrescrever. Se o Qwen SPA tentar `window.fetch = x`,
+  // o assignment falha silenciosamente em non-strict mode (que é o caso do SPA).
+  // Isso evita cadeias de hooks.
   let installCount = 0;
   function installHook() {
-    // Captura o fetch atual (pode ser o nativo, ou o wrapper do Qwen SPA)
     const currentFetch = window.fetch;
-    // Se já é nosso hook, não faz nada
-    if (currentFetch.__qwenAgentHook) return;
-    // Marca nosso hook
+    if (currentFetch && currentFetch.__qwenAgentHook) return; // já é nosso
     const hooked = makeHookedFetch(currentFetch);
     hooked.__qwenAgentHook = true;
-    // Guarda referência ao "próximo" fetch para debug
     hooked.__qwenAgentNext = currentFetch;
-    window.fetch = hooked;
+    try {
+      Object.defineProperty(window, 'fetch', {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: hooked
+      });
+    } catch (e) {
+      // Se já foi definido como non-writable por uma instalação anterior
+      // (improvável), usa assignment normal
+      window.fetch = hooked;
+    }
     installCount++;
-    console.log(TAG, `fetch hook instalado (#${installCount})`);
+    console.log(TAG, `fetch hook instalado (#${installCount}, non-writable)`);
   }
 
-  // Instala imediatamente
   installHook();
 
-  // Re-instala a cada 500ms por 8 segundos (para capturar wrappers que o
-  // Qwen SPA adicione depois). Após 8s, re-instala a cada 3s para sempre.
-  let rehookInterval = setInterval(installHook, 500);
-  setTimeout(() => {
-    clearInterval(rehookInterval);
-    setInterval(installHook, 3000);
-    console.log(TAG, 're-hook switched to 3s interval');
-  }, 8000);
+  // Re-verifica a cada 2s por 20s (caso a primeira instalação falhe por algum
+  // motivo — ex: script injetado antes do window.fetch existir).
+  // Após 20s, para de re-verificar (non-writable garante que sobrevive).
+  let rehookInterval = setInterval(() => {
+    if (window.fetch && window.fetch.__qwenAgentHook) {
+      clearInterval(rehookInterval);
+      return;
+    }
+    installHook();
+  }, 2000);
+  setTimeout(() => clearInterval(rehookInterval), 20000);
 
   // =====================================================================
   // PARTE 2: Folder picker via capture-phase click handler
   // =====================================================================
-  // Anexamos um handler de clique (fase de captura) ao botão #qa-pick do painel.
-  // Como este script roda no MAIN WORLD, window.showDirectoryPicker está disponível.
-  // Como é um handler direto de clique do usuário, o gesto é preservado.
 
   function setupFolderPickerButton() {
     const btn = document.getElementById('qa-pick');
@@ -219,9 +299,7 @@
     if (btn.__qwenAgentMainBound) return true;
     btn.__qwenAgentMainBound = true;
 
-    // Capture phase = roda ANTES do handler do content script
     btn.addEventListener('click', async (e) => {
-      // Interrompe propagação para o handler do content script (quebrado) não rodar
       e.stopImmediatePropagation();
       e.preventDefault();
 
@@ -239,7 +317,6 @@
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
         console.log(TAG, 'pasta selecionada:', handle.name);
 
-        // Pede permissão explicitamente dentro do gesto do usuário
         let perm;
         try {
           perm = await handle.requestPermission({ mode: 'readwrite' });
@@ -253,12 +330,10 @@
           return;
         }
 
-        // Envia handle de volta para o content script (structured clone)
         sendToIsolated('folder-picked', { handle, name: handle.name });
       } catch (err) {
         console.warn(TAG, 'erro no showDirectoryPicker:', err);
         if (err.name === 'AbortError') {
-          // usuário cancelou — não mostra erro
           return;
         }
         sendToIsolated('folder-pick-error', {
@@ -266,28 +341,23 @@
           errorName: err.name
         });
       }
-    }, true); // capture = true
+    }, true);
 
     console.log(TAG, 'handler de clique anexado ao botão #qa-pick');
     return true;
   }
 
-  // Observa até o botão aparecer (o painel é criado depois do boot)
   const pickerObserver = new MutationObserver(() => {
-    if (setupFolderPickerButton()) {
-      // não desconecta — o painel pode ser recriado
-    }
+    setupFolderPickerButton();
   });
   pickerObserver.observe(document.documentElement, {
     childList: true, subtree: true
   });
-  // tenta uma vez imediatamente
   setupFolderPickerButton();
 
   // =====================================================================
-  // PARTE 3: Botão de teste do agente (opcional, para debug)
+  // PARTE 3: Botão de teste do agente (debug)
   // =====================================================================
-  // Observa o botão #qa-test-agent se existir
   function setupTestButton() {
     const btn = document.getElementById('qa-test-agent');
     if (!btn || btn.__qwenAgentMainBound) return;
