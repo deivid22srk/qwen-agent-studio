@@ -8,9 +8,11 @@ Thumbs.db
 *.swp
 
 # Build artifacts
-*.zip
 *.crx
 *.pem
+# Zips are gitignored, EXCEPT the install bundle in docs/
+*.zip
+!docs/*.zip
 
 # Logs
 logs
