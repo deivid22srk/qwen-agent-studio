@@ -46,7 +46,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/*.png", "icons/*.svg", "lib/*.js"],
+      "resources": ["icons/*.png", "icons/*.svg", "lib/*.js", "main_world.js"],
       "matches": ["https://*.qwen.ai/*"]
     }
   ],

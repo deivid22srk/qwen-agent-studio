@@ -1,18 +1,19 @@
 /**
- * content.js — Orquestra a extensão dentro da página do Qwen.
+ * content.js — Orquestra a extensão dentro da página do Qwen (ISOLATED WORLD).
  *
  * Responsabilidades:
  *  1. Inicializar o injector (UI flutuante + painel).
- *  2. Interceptar envio de mensagens para injetar o system prompt do agente.
- *  3. Observar novas mensagens do assistente, detectar tool calls, executar,
+ *  2. Injetar main_world.js na página (MAIN WORLD) para hookar o fetch.
+ *  3. Responder a mensagens do main_world com estado do agente + system prompt.
+ *  4. Observar novas mensagens do assistente, detectar tool calls, executar,
  *     e injetar o resultado como nova mensagem de usuário.
- *  4. Manter o usuário informado via badge + painel de log.
+ *  5. Manter o usuário informado via badge + painel de log.
  *
- * A interceptação é feita de duas formas complementares:
- *   A) Hook no fetch/XMLHttpRequest para capturar o stream da resposta do Qwen
- *      (assim detectamos tool calls em tempo real, antes do render final).
- *   B) MutationObserver no container de mensagens (fallback caso o stream
- *      mude de formato).
+ * Arquitetura de comunicação:
+ *   - main_world.js (MAIN) → window.postMessage → content.js (ISOLATED)
+ *   - content.js responde com window.postMessage de volta
+ *   Isto é necessário porque content scripts em MV3 rodam em isolated world
+ *   e não conseguem hookar window.fetch da página diretamente.
  */
 
 (function () {
@@ -21,6 +22,8 @@
   let SESSION_ID = 'sess-' + Date.now();
   let lastHandledSignature = new Set();
   let busy = false;
+  let cachedSystemPrompt = null; // cache: invalidado quando agent_on muda
+  let cachedAgentOn = null;
 
   async function getCtx() {
     const h = await QwenStore.getHandle();
@@ -33,43 +36,65 @@
     };
   }
 
-  // ---------- 1) Hook no fetch para capturar o streaming da resposta ----------
-  function hookFetch() {
-    const origFetch = window.fetch;
-    window.fetch = async function (...args) {
-      const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
-      const init = args[1] || {};
-      const res = await origFetch.apply(this, args);
-
-      // Captura prompts enviados (para usarmos como contexto)
-      if (url && url.includes('/api/chat/completions') && init.method && init.method.toUpperCase() === 'POST') {
-        try {
-          const bodyStr = typeof init.body === 'string' ? init.body : '';
-          if (bodyStr) {
-            const body = JSON.parse(bodyStr);
-            // Insere o system prompt do agente no início das mensagens, se ativo
-            const cfgOn = await QwenStore.getConfig('agent_on', false);
-            if (cfgOn) {
-              const ctx = await getCtx();
-              const sysPrompt = QwenParser.buildSystemPrompt(ctx);
-              if (!body.messages || !body.messages.some((m) => m.role === 'system' && m.content && m.content.includes('TOOL CALL'))) {
-                body.messages = body.messages || [];
-                body.messages.unshift({ role: 'system', content: sysPrompt });
-                // Re-serializa
-                args[1] = { ...init, body: JSON.stringify(body) };
-                return origFetch.apply(this, args);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('[QwenAgent] falha ao inspecionar request:', e);
-        }
-      }
-      return res;
-    };
+  // ---------- 1) Injeta main_world.js no MAIN WORLD da página ----------
+  function injectMainWorldScript() {
+    if (document.getElementById('qwen-agent-main-world-script')) return;
+    // Tenta via <script src> (web_accessible_resources)
+    try {
+      const s = document.createElement('script');
+      s.src = chrome.runtime.getURL('main_world.js');
+      s.id = 'qwen-agent-main-world-script';
+      s.async = false;
+      s.onload = () => console.log('[QwenAgent] main_world.js injetado');
+      s.onerror = () => console.warn('[QwenAgent] falha ao injetar main_world.js');
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) {
+      console.warn('[QwenAgent] injectMainWorldScript falhou:', e);
+    }
   }
 
-  // ---------- 2) Observa mensagens do assistente (fallback robusto) ----------
+  // ---------- 2) Listener de mensagens do main_world ----------
+  async function handleMainWorldMessage(event) {
+    if (event.source !== window) return;
+    if (!event.data || event.data.source !== 'qwen-agent-main') return;
+    const { id, type, payload } = event.data;
+
+    if (type === 'get-agent-state') {
+      try {
+        const agentOn = await QwenStore.getConfig('agent_on', false);
+        let systemPrompt = null;
+        if (agentOn) {
+          // só rebuilda se mudou
+          if (cachedAgentOn !== agentOn || !cachedSystemPrompt) {
+            const ctx = await getCtx();
+            cachedSystemPrompt = QwenParser.buildSystemPrompt(ctx);
+            cachedAgentOn = agentOn;
+          }
+          systemPrompt = cachedSystemPrompt;
+        }
+        const folder = await QwenStore.getHandle();
+        window.postMessage({
+          source: 'qwen-agent-isolated',
+          id, type: 'agent-state-response',
+          payload: {
+            agentOn,
+            systemPrompt,
+            hasFolder: !!folder,
+            folderName: folder ? folder.name : null
+          }
+        }, '*');
+      } catch (e) {
+        window.postMessage({
+          source: 'qwen-agent-isolated',
+          id, type: 'agent-state-response',
+          payload: { agentOn: false, systemPrompt: null, error: e.message }
+        }, '*');
+      }
+    }
+  }
+  window.addEventListener('message', handleMainWorldMessage);
+
+  // ---------- 3) Observa mensagens do assistente (fallback robusto) ----------
   function observeMessages() {
     const observer = new MutationObserver(() => {
       if (busy) return;
@@ -79,21 +104,28 @@
   }
 
   async function handleLatestAssistantMessage() {
-    // Tenta vários seletores possíveis para a última mensagem do assistente
-    const candidates = [
-      ...document.querySelectorAll('[class*="message"][class*="recieved"]'),
-      ...document.querySelectorAll('[class*="message"][class*="assistant"]'),
-      ...document.querySelectorAll('[class*="chat-message"][class*="assistant"]'),
-      ...document.querySelectorAll('.markdown-body')
+    // Tenta vários seletores possíveis para a última mensagem do assistente.
+    // Ordem: do mais específico para o mais genérico.
+    const selectors = [
+      '[class*="message"][class*="recieved"]',
+      '[class*="message"][class*="received"]',
+      '[class*="message"][class*="assistant"]',
+      '[class*="chat-message"][class*="assistant"]',
+      '.markdown-body',
+      '[class*="MessageItem"][class*="assistant"]'
     ];
-
-    // Pega o último elemento visível
     let lastMsg = null;
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const el = candidates[i];
-      if (el && el.offsetParent !== null) {
-        lastMsg = el;
-        break;
+    for (const sel of selectors) {
+      const list = document.querySelectorAll(sel);
+      if (list.length) {
+        // pega o último visível
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].offsetParent !== null || list[i].offsetHeight > 0) {
+            lastMsg = list[i];
+            break;
+          }
+        }
+        if (lastMsg) break;
       }
     }
     if (!lastMsg) return;
@@ -109,11 +141,10 @@
     if (!calls.length) return;
 
     // só processa se a mensagem parece "estável" (não está mais crescendo).
-    // Heurística simples: aguardar 600ms e checar se o tamanho mudou.
     const sizeBefore = text.length;
     busy = true;
     QwenInjector.setBusy(true);
-    await sleep(700);
+    await sleep(900);
     const textAfter = (lastMsg.innerText || '').trim();
     if (Math.abs(textAfter.length - sizeBefore) > 50) {
       // ainda mudando — tenta de novo depois
@@ -159,7 +190,7 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  // ---------- 3) Injeta uma nova mensagem de usuário no chat ----------
+  // ---------- 4) Injeta uma nova mensagem de usuário no chat ----------
   async function injectUserMessage(text) {
     const textarea = document.querySelector('textarea.message-input-textarea') ||
                      document.querySelector('textarea[placeholder*="help"]') ||
@@ -177,11 +208,11 @@
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Aguarda o React processar e dispara Enter
-    await sleep(120);
+    await sleep(150);
 
     // Tenta o botão de envio
     const sendBtn = document.querySelector('.message-input-right-button-send') ||
-                    document.querySelector('[class*="send"]');
+                    document.querySelector('[class*="send"]:not([disabled])');
     if (sendBtn) {
       sendBtn.click();
     } else {
@@ -194,9 +225,12 @@
     }
   }
 
-  // ---------- 4) Listener para mensagens do popup/background ----------
+  // ---------- 5) Listener para mensagens do popup/background ----------
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'REFRESH_STATE') {
+      // invalida cache do system prompt
+      cachedAgentOn = null;
+      cachedSystemPrompt = null;
       QwenInjector.refreshState().then(() => sendResponse({ ok: true }));
       return true;
     }
@@ -214,7 +248,7 @@
         QwenInjector._pickFolder().then(() => sendResponse({ ok: true }))
           .catch((e) => sendResponse({ ok: false, error: e.message }));
       } else {
-        // fallback: expõe pickFolder
+        // fallback: pickFolder inline
         const pick = async () => {
           try {
             const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -244,17 +278,19 @@
     }
   });
 
-  // ---------- 5) Boot ----------
+  // ---------- 6) Boot ----------
   async function boot() {
-    console.log('[QwenAgent] boot');
+    console.log('[QwenAgent] boot (isolated world)');
     await QwenInjector.init();
-    hookFetch();
+    injectMainWorldScript();
     observeMessages();
     // garante estado fresco a cada navigation SPA
     let lastUrl = location.href;
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
+        cachedAgentOn = null;
+        cachedSystemPrompt = null;
         QwenInjector.refreshState();
       }
     }, 1500);
